@@ -111,9 +111,9 @@ class BiasaddMatMulTest(trt_test.TfTrtIntegrationTestBase):
     return trt_test.TfTrtIntegrationTestParams(
         gdef=g.as_graph_def(),
         input_names=[input_name],
-        input_dims=[input_dims],
+        input_dims=[[input_dims]],
         output_names=[output_name],
-        expected_output_dims=[(4, 6680)])
+        expected_output_dims=[[[4, 6680]]])
 
   def GetConversionParams(self, run_params):
     """Return a ConversionParams for test."""
@@ -128,13 +128,7 @@ class BiasaddMatMulTest(trt_test.TfTrtIntegrationTestBase):
 
   def ExpectedEnginesToBuild(self, run_params):
     """Return the expected engines to build."""
-    return ["my_trt_op_0"]
-
-  def ShouldRunTest(self, run_params):
-    """Whether to run the test."""
-    # TODO(aaroey): Trt 4.0 forbids conversion for tensors with rank <3 in int8
-    # mode, which is a bug. Re-enable this when trt library is fixed.
-    return not trt_test.IsQuantizationMode(run_params.precision_mode)
+    return ["TRTEngineOp_0"]
 
 
 if __name__ == "__main__":
