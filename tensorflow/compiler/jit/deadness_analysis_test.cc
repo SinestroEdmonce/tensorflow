@@ -521,9 +521,9 @@ TEST(DeadnessAnalysisTest, Loop) {
     EXPECT_EQ(predicate_map[ControlOutputFor(iv2)],
               "{#true,&,*iv2/cond:0}<fr0>");
     EXPECT_EQ(predicate_map[ControlOutputFor(add0)],
-              "({#true,&,*iv1/cond:0}<fr0> & {#true,&,*iv0/cond:0}<fr0>)");
+              "({#true,&,*iv0/cond:0}<fr0> & {#true,&,*iv1/cond:0}<fr0>)");
     EXPECT_EQ(predicate_map[ControlOutputFor(add1)],
-              "({#true,&,*iv2/cond:0}<fr0> & {#true,&,*iv1/cond:0}<fr0>)");
+              "({#true,&,*iv1/cond:0}<fr0> & {#true,&,*iv2/cond:0}<fr0>)");
   }
 }
 
@@ -553,11 +553,11 @@ TEST(DeadnessAnalysisTest, ControlEquivalentLoopBodies) {
     EXPECT_EQ(predicate_map[ControlOutputFor(iv.induction_var)],
               "{#true,&,*iv0/cond:0}<loop>");
     EXPECT_EQ(predicate_map[ControlOutputFor(dependent_iv0)],
-              "{#true,&,(*iv0/cond:0 & iv0/iv:0)}<loop>");
+              "{#true,&,(iv0/iv:0 & *iv0/cond:0)}<loop>");
     EXPECT_EQ(predicate_map[ControlOutputFor(dependent_iv1)],
-              "{#true,&,(*iv0/cond:0 & iv0/iv:0)}<loop>");
+              "{#true,&,(iv0/iv:0 & *iv0/cond:0)}<loop>");
     EXPECT_EQ(predicate_map[ControlOutputFor(add0)],
-              "{#true,&,(*iv0/cond:0 & iv0/iv:0)}<loop>");
+              "{#true,&,(iv0/iv:0 & *iv0/cond:0)}<loop>");
   }
 }
 
@@ -643,22 +643,23 @@ TEST(DeadnessAnalysisTest, ControlEquivalentNestedLoopBodies) {
     EXPECT_EQ(predicate_map[ControlOutputFor(iv_outer.induction_var)],
               "{#true,&,*iv_outer/cond:0}<outer_loop>");
     EXPECT_EQ(predicate_map[ControlOutputFor(iv_inner.induction_var)],
-              "{({#true,&,*iv_outer/cond:0}<outer_loop> & "
-              "*iv_outer/cond:0),&,*iv_inner/cond:0}<inner_loop;outer_loop>");
+              "{(*iv_outer/cond:0 & "
+              "{#true,&,*iv_outer/cond:0}<outer_loop>),&,*iv_inner/"
+              "cond:0}<inner_loop;outer_loop>");
 
     EXPECT_EQ(predicate_map[ControlOutputFor(dependent_inner_iv0)],
               "{{#true,&,(iv_outer/iv:0 & "
-              "*iv_outer/cond:0)}<outer_loop>,&,(*iv_inner/cond:0 & "
-              "iv_inner/iv:0)}<inner_loop;outer_loop>");
+              "*iv_outer/cond:0)}<outer_loop>,&,(iv_inner/iv:0 & "
+              "*iv_inner/cond:0)}<inner_loop;outer_loop>");
 
     EXPECT_EQ(predicate_map[ControlOutputFor(dependent_inner_iv1)],
               "{{#true,&,(iv_outer/iv:0 & "
-              "*iv_outer/cond:0)}<outer_loop>,&,(*iv_inner/cond:0 & "
-              "iv_inner/iv:0)}<inner_loop;outer_loop>");
+              "*iv_outer/cond:0)}<outer_loop>,&,(iv_inner/iv:0 & "
+              "*iv_inner/cond:0)}<inner_loop;outer_loop>");
     EXPECT_EQ(predicate_map[ControlOutputFor(add0)],
               "{{#true,&,(iv_outer/iv:0 & "
-              "*iv_outer/cond:0)}<outer_loop>,&,(*iv_inner/cond:0 & "
-              "iv_inner/iv:0)}<inner_loop;outer_loop>");
+              "*iv_outer/cond:0)}<outer_loop>,&,(iv_inner/iv:0 & "
+              "*iv_inner/cond:0)}<inner_loop;outer_loop>");
   }
 }
 
@@ -702,20 +703,21 @@ TEST(DeadnessAnalysisTest, ControlNonEquivalentNestedLoopBodies) {
     EXPECT_EQ(predicate_map[ControlOutputFor(outer_iv[0])],
               "{#true,&,*iv_outer/cond:0}<outer_loop>");
     EXPECT_EQ(predicate_map[ControlOutputFor(inner_iv[0])],
-              "{({#true,&,*iv_outer/cond:0}<outer_loop> & "
-              "*iv_outer/cond:0),&,*iv_inner/cond:0}<inner_loop;outer_loop>");
+              "{(*iv_outer/cond:0 & "
+              "{#true,&,*iv_outer/cond:0}<outer_loop>),&,*iv_inner/"
+              "cond:0}<inner_loop;outer_loop>");
     EXPECT_EQ(predicate_map[ControlOutputFor(outer_iv[1])],
               "{#true,&,*iv_outer/cond_1:0}<outer_loop>");
-    EXPECT_EQ(
-        predicate_map[ControlOutputFor(inner_iv[1])],
-        "{({#true,&,*iv_outer/cond_1:0}<outer_loop> & "
-        "*iv_outer/cond_1:0),&,*iv_inner/cond_1:0}<inner_loop;outer_loop>");
-    EXPECT_EQ(
-        predicate_map[ControlOutputFor(add0)],
-        "({({#true,&,*iv_outer/cond_1:0}<outer_loop> & "
-        "*iv_outer/cond_1:0),&,*iv_inner/cond_1:0}<inner_loop;outer_loop> & "
-        "{({#true,&,*iv_outer/cond:0}<outer_loop> & "
-        "*iv_outer/cond:0),&,*iv_inner/cond:0}<inner_loop;outer_loop>)");
+    EXPECT_EQ(predicate_map[ControlOutputFor(inner_iv[1])],
+              "{(*iv_outer/cond_1:0 & "
+              "{#true,&,*iv_outer/cond_1:0}<outer_loop>),&,*iv_inner/"
+              "cond_1:0}<inner_loop;outer_loop>");
+    EXPECT_EQ(predicate_map[ControlOutputFor(add0)],
+              "({(*iv_outer/cond:0 & "
+              "{#true,&,*iv_outer/cond:0}<outer_loop>),&,*iv_inner/"
+              "cond:0}<inner_loop;outer_loop> & {(*iv_outer/cond_1:0 & "
+              "{#true,&,*iv_outer/cond_1:0}<outer_loop>),&,*iv_inner/"
+              "cond_1:0}<inner_loop;outer_loop>)");
   }
 }
 
@@ -917,6 +919,44 @@ TEST(DeadnessAnalysisTest, DeMorgan) {
 
   EXPECT_EQ(predicate_map[ControlOutputFor(should_always_be_dead)], "#false");
   EXPECT_EQ(predicate_map[ControlOutputFor(should_always_be_alive)], "#true");
+}
+
+TEST(DeadnessAnalysisTest, ConstantTrueSwitchCondition) {
+  Scope root = Scope::NewRootScope().ExitOnError();
+
+  Output constant_true = ops::Const(root.WithOpName("const_true"), true);
+  Output value = ops::Placeholder(root.WithOpName("value"), DT_FLOAT);
+  ops::Switch sw(root.WithOpName("switch"), value, constant_true);
+
+  Output id_false = ops::Identity(root.WithOpName("id_false"), sw.output_false);
+  Output id_true = ops::Identity(root.WithOpName("id_true"), sw.output_true);
+
+  FixupSourceAndSinkEdges(root.graph());
+
+  PredicateMapTy predicate_map;
+  TF_ASSERT_OK(ComputePredicates(*root.graph(), &predicate_map));
+
+  EXPECT_EQ(predicate_map[ControlOutputFor(id_false)], "#false");
+  EXPECT_EQ(predicate_map[ControlOutputFor(id_true)], "#true");
+}
+
+TEST(DeadnessAnalysisTest, ConstantFalseSwitchCondition) {
+  Scope root = Scope::NewRootScope().ExitOnError();
+
+  Output constant_false = ops::Const(root.WithOpName("const_false"), false);
+  Output value = ops::Placeholder(root.WithOpName("value"), DT_FLOAT);
+  ops::Switch sw(root.WithOpName("switch"), value, constant_false);
+
+  Output id_false = ops::Identity(root.WithOpName("id_false"), sw.output_false);
+  Output id_true = ops::Identity(root.WithOpName("id_true"), sw.output_true);
+
+  FixupSourceAndSinkEdges(root.graph());
+
+  PredicateMapTy predicate_map;
+  TF_ASSERT_OK(ComputePredicates(*root.graph(), &predicate_map));
+
+  EXPECT_EQ(predicate_map[ControlOutputFor(id_false)], "#true");
+  EXPECT_EQ(predicate_map[ControlOutputFor(id_true)], "#false");
 }
 
 }  // namespace

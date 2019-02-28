@@ -20,6 +20,8 @@ limitations under the License.
 #include "absl/strings/str_join.h"
 #include "tensorflow/compiler/jit/deadness_analysis_internal.h"
 #include "tensorflow/compiler/jit/xla_cluster_util.h"
+#include "tensorflow/compiler/xla/status_macros.h"
+#include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/control_flow.h"
 #include "tensorflow/core/graph/tensor_id.h"
@@ -111,7 +113,11 @@ class Predicate {
   enum class Kind { kAnd, kOr, kNot, kAndRecurrence, kSymbol };
 
   virtual string ToString() const = 0;
-  int64 hash() const { return hash_; }
+
+  // An ID assigned to the Predicate at construction time.  Conceptually like a
+  // pointer, except that it is stable across runs.
+  int64 id() const { return id_; }
+
   virtual absl::Span<Predicate* const> GetOperands() const = 0;
 
   virtual Kind kind() const = 0;
@@ -124,29 +130,19 @@ class Predicate {
   static void Visit(Predicate* p, const FunctionTy& func);
 
  protected:
-  explicit Predicate(int64 hash) : hash_(hash) {}
+  explicit Predicate(int64 id) : id_(id) {}
 
  private:
-  const int64 hash_;
+  const int64 id_;
 
   TF_DISALLOW_COPY_AND_ASSIGN(Predicate);
 };
 
-int64 HashPredicateSequence(Predicate::Kind kind,
-                            absl::Span<Predicate* const> preds) {
-  int64 hash = ::tensorflow::hash<Predicate::Kind>()(kind);
-  for (Predicate* pred : preds) {
-    hash = Hash64Combine(hash, pred->hash());
-  }
-  return hash;
-}
-
 // Represents a logical conjunction of a set of predicates.
 class AndPredicate : public Predicate {
  public:
-  explicit AndPredicate(std::vector<Predicate*> operands)
-      : Predicate(HashPredicateSequence(Kind::kAnd, operands)),
-        operands_(std::move(operands)) {}
+  explicit AndPredicate(int64 id, std::vector<Predicate*> operands)
+      : Predicate(id), operands_(std::move(operands)) {}
 
   string ToString() const override {
     if (operands().empty()) {
@@ -175,9 +171,8 @@ class AndPredicate : public Predicate {
 // Represents a logical disjunction of a set of predicates.
 class OrPredicate : public Predicate {
  public:
-  explicit OrPredicate(std::vector<Predicate*> operands)
-      : Predicate(HashPredicateSequence(Kind::kOr, operands)),
-        operands_(std::move(operands)) {}
+  explicit OrPredicate(int64 id, std::vector<Predicate*> operands)
+      : Predicate(id), operands_(std::move(operands)) {}
 
   string ToString() const override {
     if (operands().empty()) {
@@ -205,9 +200,8 @@ class OrPredicate : public Predicate {
 // Represents a logical negation of a set of predicates.
 class NotPredicate : public Predicate {
  public:
-  explicit NotPredicate(Predicate* operand)
-      : Predicate(HashPredicateSequence(Kind::kNot, {operand})),
-        operands_({operand}) {}
+  explicit NotPredicate(int64 id, Predicate* operand)
+      : Predicate(id), operands_({operand}) {}
 
   string ToString() const override {
     return absl::StrCat("~", operand()->ToString());
@@ -244,19 +238,17 @@ class NotPredicate : public Predicate {
 // iterations).
 class AndRecurrencePredicate : public Predicate {
  public:
-  explicit AndRecurrencePredicate(Predicate* start, Predicate* step,
-                                  string frame)
-      : Predicate(Hash(start, step, frame)),
-        operands_({start, step}),
-        frame_(std::move(frame)) {}
+  explicit AndRecurrencePredicate(int64 id, Predicate* start, Predicate* step,
+                                  std::vector<string> frame)
+      : Predicate(id), operands_({start, step}), frame_(std::move(frame)) {}
 
   Predicate* start() const { return operands_[0]; }
   Predicate* step() const { return operands_[1]; }
-  absl::string_view frame() const { return frame_; }
+  absl::Span<const string> frame() const { return frame_; }
 
   string ToString() const override {
     return absl::StrCat("{", start()->ToString(), ",&,", step()->ToString(),
-                        "}<", frame(), ">");
+                        "}<", absl::StrJoin(frame(), ";"), ">");
   }
 
   Kind kind() const override { return Kind::kAndRecurrence; }
@@ -267,13 +259,7 @@ class AndRecurrencePredicate : public Predicate {
 
  private:
   std::array<Predicate*, 2> operands_;
-  string frame_;
-
-  static int64 Hash(Predicate* start, Predicate* step, const string& frame) {
-    return Hash64Combine(
-        HashPredicateSequence(Kind::kAndRecurrence, {start, step}),
-        Hash64(frame));
-  }
+  std::vector<string> frame_;
 };
 
 // Represents an uninterpreted symbol in a logical predicate.
@@ -283,8 +269,8 @@ class AndRecurrencePredicate : public Predicate {
 // symbols.
 class SymbolPredicate : public Predicate {
  public:
-  explicit SymbolPredicate(TensorId tensor_id, bool must_be_true)
-      : Predicate(Hash(tensor_id, must_be_true)),
+  explicit SymbolPredicate(int64 id, TensorId tensor_id, bool must_be_true)
+      : Predicate(id),
         tensor_id_(std::move(tensor_id)),
         must_be_true_(must_be_true) {}
 
@@ -300,20 +286,13 @@ class SymbolPredicate : public Predicate {
   // "tensor_id() is live and evaluates to true".
   //
   // If `must_be_true()` is false then this SymbolPredicate represents the
-  // proposition "tensor_id() is live (and may evalutate to any value)"
+  // proposition "tensor_id() is live (and may evaluate to any value)"
   TensorId tensor_id() const { return tensor_id_; }
   bool must_be_true() const { return must_be_true_; }
 
  private:
   TensorId tensor_id_;
   bool must_be_true_;
-
-  static int64 Hash(const TensorId tensor_id, bool must_be_true) {
-    return Hash64Combine(
-        ::tensorflow::hash<bool>()(must_be_true),
-        Hash64Combine(::tensorflow::hash<Predicate::Kind>()(Kind::kSymbol),
-                      TensorId::Hasher{}(tensor_id)));
-  }
 };
 
 template <typename FunctionTy>
@@ -368,7 +347,7 @@ class PredicateFactory {
   }
 
   Predicate* MakeAndRecurrencePredicate(Predicate* start, Predicate* step,
-                                        string frame) {
+                                        std::vector<string> frame) {
     SignatureForAndRec signature(start, step, std::move(frame));
     auto it = interned_and_rec_instances_.find(signature);
     if (it != interned_and_rec_instances_.end()) {
@@ -386,7 +365,24 @@ class PredicateFactory {
     return new_pred_ptr;
   }
 
-  Predicate* MakeSymbolPredicate(TensorId tensor_id, bool must_be_true) {
+  Status MakeSymbolPredicate(Node* node, int output_idx, bool must_be_true,
+                             Predicate** predicate) {
+    TensorId tensor_id(node->name(), output_idx);
+
+    bool is_boolean_tensor = node->output_type(tensor_id.index()) == DT_BOOL;
+    TF_RET_CHECK(!must_be_true || is_boolean_tensor);
+
+    if (node->type_string() == "Const" && must_be_true) {
+      const TensorProto* proto = nullptr;
+      TF_RETURN_IF_ERROR(GetNodeAttr(node->def(), "value", &proto));
+
+      Tensor tensor(proto->dtype());
+      TF_RET_CHECK(tensor.FromProto(*proto));
+
+      *predicate = tensor.scalar<bool>()() ? MakeTrue() : MakeFalse();
+      return Status::OK();
+    }
+
     SignatureForSymbol signature = {tensor_id, must_be_true};
     auto it = interned_symbol_instances_.find(signature);
     if (it == interned_symbol_instances_.end()) {
@@ -395,10 +391,12 @@ class PredicateFactory {
       Predicate* new_pred_ptr = new_pred.get();
       interned_symbol_instances_.emplace(std::move(signature),
                                          std::move(new_pred));
-      return new_pred_ptr;
+      *predicate = new_pred_ptr;
     } else {
-      return it->second.get();
+      *predicate = it->second.get();
     }
+
+    return Status::OK();
   }
 
   Predicate* MakeTrue() { return MakeAndPredicate({}); }
@@ -452,8 +450,11 @@ class PredicateFactory {
 
   template <typename PredicateT, typename... Args>
   std::unique_ptr<Predicate> Make(Args&&... args) {
+    // If we ever expose the Predicate class outside this .cc file then we may
+    // want to make this hard to misuse (by accidentally passing in an arbitrary
+    // integer to the Predicate constructor for instance).
     return std::unique_ptr<PredicateT>(
-        new PredicateT(std::forward<Args>(args)...));
+        new PredicateT(id_counter_++, std::forward<Args>(args)...));
   }
 
   Predicate* MakeAndOrImpl(absl::Span<Predicate* const> operands, bool is_and);
@@ -473,7 +474,8 @@ class PredicateFactory {
   using SignatureForAndOr =
       std::pair<Predicate::Kind, absl::Span<Predicate* const>>;
   using SignatureForNot = Predicate*;
-  using SignatureForAndRec = std::tuple<Predicate*, Predicate*, string>;
+  using SignatureForAndRec =
+      std::tuple<Predicate*, Predicate*, std::vector<string>>;
   using SignatureForSymbol = std::pair<SafeTensorId, bool>;
 
   struct HashSignatureForAndOr {
@@ -533,6 +535,7 @@ class PredicateFactory {
   absl::flat_hash_map<SignatureForSymbol, std::unique_ptr<Predicate>,
                       HashSignatureForSymbol>
       interned_symbol_instances_;
+  int64 id_counter_ = 0;
   int stack_depth_ = 0;
 };
 
@@ -540,7 +543,7 @@ Predicate* PredicateFactory::MakeInternedAndOr(
     std::vector<Predicate*> simplified_ops, Predicate::Kind pred_kind) {
   std::stable_sort(
       simplified_ops.begin(), simplified_ops.end(),
-      [](Predicate* a, Predicate* b) { return a->hash() < b->hash(); });
+      [](Predicate* a, Predicate* b) { return a->id() < b->id(); });
 
   auto it = interned_and_or_instances_.find({pred_kind, simplified_ops});
   if (it != interned_and_or_instances_.end()) {
@@ -786,9 +789,12 @@ Status DeadnessAnalysisImpl::HandleSwitch(Node* n,
   TF_RETURN_IF_ERROR(GetInputPreds(n, EdgeKind::kDataAndControl, &input_preds));
   const Edge* pred_edge;
   TF_RETURN_IF_ERROR(n->input_edge(1, &pred_edge));
-  Predicate* true_switch = predicate_factory_.MakeSymbolPredicate(
-      TensorId(pred_edge->src()->name(), pred_edge->src_output()),
-      /*must_be_true=*/true);
+
+  Predicate* true_switch;
+  TF_RETURN_IF_ERROR(predicate_factory_.MakeSymbolPredicate(
+      pred_edge->src(), pred_edge->src_output(),
+      /*must_be_true=*/true, &true_switch));
+
   Predicate* false_switch = predicate_factory_.MakeNotPredicate(true_switch);
 
   // Output 0 is alive iff all inputs are alive and the condition is false.
@@ -887,17 +893,12 @@ Predicate* DeduceStepPredicate(PredicateFactory* predicate_factory,
   return found_sym ? predicate_factory->MakeAndPredicate(and_ops) : nullptr;
 }
 
-Status GetFullFrameName(const Node* n,
-                        absl::Span<const ControlFlowInfo> cfi_infos,
-                        string* full_frame_name) {
+Status GetFullFrame(const Node* n, absl::Span<const ControlFlowInfo> cfi_infos,
+                    std::vector<string>* frame) {
   int depth = 0;
   for (const ControlFlowInfo* cfi_iter = &cfi_infos[n->id()]; !n->IsSource();
        n = cfi_iter->parent_frame, cfi_iter = &cfi_infos[n->id()]) {
-    if (depth > 0) {
-      absl::StrAppend(full_frame_name, ";");
-    }
-
-    absl::StrAppend(full_frame_name, cfi_iter->frame_name);
+    frame->push_back(cfi_iter->frame_name);
 
     if (depth++ > 5000) {
       return errors::Internal(
@@ -930,8 +931,10 @@ Status DeadnessAnalysisImpl::HandleMerge(Node* n,
     if (has_unvisited_backedge) {
       // We're visiting this merge for the first time and it has an unvisited
       // backedge.
-      Predicate* input_data_pred = predicate_factory_.MakeSymbolPredicate(
-          TensorId(n->name(), 0), /*must_be_true=*/false);
+      Predicate* input_data_pred;
+      TF_RETURN_IF_ERROR(predicate_factory_.MakeSymbolPredicate(
+          n, /*output_idx=*/0, /*must_be_true=*/false, &input_data_pred));
+
       SetPredicate(n, {0, 1, Graph::kControlSlot}, input_data_pred,
                    should_revisit);
       return Status::OK();
@@ -972,11 +975,10 @@ Status DeadnessAnalysisImpl::HandleMerge(Node* n,
 
         Predicate* start =
             predicate_factory_.MakeOrPredicate(non_recurrent_inputs);
-        string frame_name;
-        TF_RETURN_IF_ERROR(
-            GetFullFrameName(n, control_flow_info_, &frame_name));
+        std::vector<string> frame;
+        TF_RETURN_IF_ERROR(GetFullFrame(n, control_flow_info_, &frame));
         Predicate* and_rec = predicate_factory_.MakeAndRecurrencePredicate(
-            start, step, std::move(frame_name));
+            start, step, std::move(frame));
         SetPredicate(n, {0, 1, Graph::kControlSlot}, and_rec, should_revisit);
         return Status::OK();
       }
@@ -991,8 +993,10 @@ Status DeadnessAnalysisImpl::HandleRecv(Node* n,
   // acquire a dead signal from a _Send.
   std::vector<Predicate*> input_preds;
   TF_RETURN_IF_ERROR(GetInputPreds(n, EdgeKind::kDataAndControl, &input_preds));
-  input_preds.push_back(predicate_factory_.MakeSymbolPredicate(
-      TensorId(n->name(), 0), /*must_be_true=*/false));
+  Predicate* signal_is_alive;
+  TF_RETURN_IF_ERROR(predicate_factory_.MakeSymbolPredicate(
+      n, /*output_idx=*/0, /*must_be_true=*/false, &signal_is_alive));
+  input_preds.push_back(signal_is_alive);
   SetPredicate(n, {0, Graph::kControlSlot},
                predicate_factory_.MakeAndPredicate(input_preds),
                should_revisit);
@@ -1044,7 +1048,6 @@ Status DeadnessAnalysisImpl::PopulateWithReversePostOrder(
     absl::Span<Node* const> rpo) {
   std::vector<string> unreachable_nodes;
   // Compute the loop structure of the graph.
-  std::vector<ControlFlowInfo> control_flow_info;
   TF_RETURN_IF_ERROR(
       BuildControlFlowInfo(&graph_, &control_flow_info_, &unreachable_nodes));
 
