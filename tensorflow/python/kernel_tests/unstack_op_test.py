@@ -43,7 +43,8 @@ class UnstackOpTest(test.TestCase):
     np.random.seed(7)
     for shape in (2,), (3,), (2, 3), (3, 2), (4, 3, 2):
       for dtype in [
-          np.bool, np.float16, np.float32, np.float64, np.int32, np.int64
+          np.bool, np.float16, np.float32, np.float64, np.uint8, np.int32,
+          np.int64
       ]:
         data = np.random.randn(*shape).astype(dtype)
         # Convert data to a single tensorflow tensor
@@ -62,7 +63,10 @@ class UnstackOpTest(test.TestCase):
     np.random.seed(7)
     with test_util.force_gpu():
       for shape in (2,), (3,), (2, 3), (3, 2), (4, 3, 2):
-        for dtype in [np.float16, np.float32, np.float64, np.int32, np.int64]:
+        for dtype in [
+            np.bool, np.float16, np.float32, np.float64, np.uint8, np.int32,
+            np.int64
+        ]:
           data = np.random.randn(*shape).astype(dtype)
           # Convert data to a single tensorflow tensor
           x = constant_op.constant(data)
@@ -162,6 +166,24 @@ class UnstackOpTest(test.TestCase):
     x = array_ops.zeros(shape=(0, 1, 2))
     y = self.evaluate(array_ops.unstack(x, axis=1)[0])
     self.assertEqual(y.shape, (0, 2))
+
+  def testComplexGpu(self):
+    if not test_util.is_gpu_available():
+      self.skipTest('No GPU available')
+
+    np.random.seed(7)
+    with test_util.force_gpu():
+      for shape in (2,), (3,), (2, 3), (3, 2), (4, 3, 2):
+        for dtype in [np.complex64, np.complex128]:
+          data = np.random.randn(*shape).astype(dtype)
+          # Convert data to a single tensorflow tensor
+          x = constant_op.constant(data)
+          # Unstack into a list of tensors
+          cs = array_ops.unstack(x, num=shape[0])
+          self.assertEqual(type(cs), list)
+          self.assertEqual(len(cs), shape[0])
+          cs = [self.evaluate(c) for c in cs]
+          self.assertAllEqual(cs, data)
 
 
 if __name__ == '__main__':
